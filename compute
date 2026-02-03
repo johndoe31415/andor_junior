@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+#	andor_junior - Compute character fight probabilities using Markov Matrices
+#	Copyright (C) 2026-2026 Johannes Bauer
+#
+#	This file is part of andor_junior.
+#
+#	andor_junior is free software; you can redistribute it and/or modify
+#	it under the terms of the GNU General Public License as published by
+#	the Free Software Foundation; this program is ONLY licensed under
+#	version 3 of the License, later versions are explicitly excluded.
+#
+#	andor_junior is distributed in the hope that it will be useful,
+#	but WITHOUT ANY WARRANTY; without even the implied warranty of
+#	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#	GNU General Public License for more details.
+#
+#	You should have received a copy of the GNU General Public License
+#	along with andor_junior; if not, write to the Free Software
+#	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+#
+#	Johannes Bauer <JohannesBauer@gmx.de>
+
+import fractions
+import itertools
+import collections
+import types
+
+class FrozenDict():
+	def __init__(self, data: dict):
+		self._data = dict(data)
+		self._frozen = tuple(sorted(data.items()))
+
+	def __getitem__(self, key):
+		return self._data[key]
+
+	def get(self, key, default = None):
+		return self._data.get(key, default)
+
+	def __eq__(self, other):
+	   return self._frozen == other._frozen
+
+	def __lt__(self, other):
+		return self._frozen < other._frozen
+
+	def __hash__(self):
+	   return hash(self._frozen)
+
+	def __repr__(self):
+		return f"{{{str(self._data)}}}"
+
+class Dice():
+	def __init__(self, sides: dict):
+		self._sides = sides
+		self._side_count = sum(sides.values())
+
+	def outcomes(self):
+		return { side_name: fractions.Fraction(side_value, self._side_count) for (side_name, side_value) in self._sides.items() }
+
+def prod(values: tuple[float]):
+	product = 1
+	for value in values:
+		product *= value
+	return product
+
+class MultiDice():
+	def __init__(self, dice: Dice):
+		self._dice = dice
+
+	def outcomes(self, dice_count: int):
+		combined_probability = collections.defaultdict(fractions.Fraction)
+		for combination in itertools.product(self._dice.outcomes().items(), repeat = dice_count):
+			probability = prod(probability for (outcome, probability) in combination)
+			counted_sides = FrozenDict(collections.Counter(outcome for (outcome, probability) in combination))
+			combined_probability[counted_sides] += probability
+		assert(sum(combined_probability.values()) == 1)
+		return combined_probability
+
+class Matrix():
+	def __init__(self, data: list[list[fractions.Fraction]]):
+		self._data = data
+
+	@property
+	def rows(self):
+		return len(self._data)
+
+	@property
+	def cols(self):
+		return len(self._data[0])
+
+	def transpose(self):
+		return Matrix([ [ self._data[j][i] for j in range(self.rows) ] for i in range(self.cols) ])
+
+	@classmethod
+	def row_vector(self, vector: list[fractions.Fraction]):
+		return Matrix([ vector ])
+
+	@classmethod
+	def col_vector(self, vector: list[fractions.Fraction]):
+		return Matrix.row_vector(vector).transpose()
+
+	def __iter__(self):
+		assert(self.cols == 1)
+		return iter(self.transpose()._data[0])
+
+	def dump(self):
+		print(f"{self.rows} x {self.cols} matrix:")
+		for row in self._data:
+			line = [ f"{str(value):<5s}" for value in row ]
+			print(" ".join(line))
+
+	def __mul__(self, other: "Matrix"):
+		assert(self.cols == other.rows)
+
+		result = [ [ 0 for j in range(other.cols) ] for i in range(self.rows) ]
+		for i in range(self.rows):
+			for j in range(other.cols):
+				for k in range(self.cols):
+					result[i][j] += self._data[i][k] * other._data[k][j]
+		return Matrix(result)
+
+class MarkovMatrix():
+	def __init__(self, ordered_states: list[FrozenDict], matrix: Matrix):
+		self._ordered_states = ordered_states
+		self._state_index = { state: index for (index, state) in enumerate(ordered_states) }
+		self._matrix = matrix
+
+	def steps(self, initial_state: FrozenDict, step_count: int):
+		# Usually we would compute this conscutively (more efficient, but
+		# really our matrices are tiny and step count is very small, so let's
+		# start fresh each time)
+		initial_vec = [ 0 ] * self._matrix.rows
+		initial_vec[self._state_index[initial_state]] = 1
+		vector = Matrix.col_vector(initial_vec)
+
+		for step in range(step_count):
+			vector = self._matrix * vector
+
+		for (index, probability) in enumerate(vector):
+			if probability > 0:
+				yield (self._ordered_states[index], probability)
+
+
+class MarkovMatrixBuilder():
+	def __init__(self, multi_dice: MultiDice):
+		self._multi_dice = multi_dice
+		self._transitions = { }
+		self._explored_states = set()
+		self._unexplored_states = set()
+
+	def _consider_transitions(self, src_state: FrozenDict):
+		if (src_state["remaining_moves"] == 0) or (src_state["remaining_dice"] == 0) or (src_state["remaining_gors"] == 0):
+			# No more moves, dice, or gors: stay in this state forever (no
+			# useful result will come of it)
+			next_states = {
+				src_state: 1,
+			}
+		else:
+			next_states = collections.defaultdict(fractions.Fraction)
+			for (combination, probability) in self._multi_dice.outcomes(dice_count = src_state["remaining_dice"]).items():
+				swords_count = combination.get("sword", 0)
+				lightning_count = combination.get("lightning", 0)
+
+				if lightning_count >= 1:
+					# Instakill all Gors
+					next_state = FrozenDict({
+						"remaining_moves": src_state["remaining_moves"] - 1,
+						"remaining_dice": 0,
+						"remaining_gors": 0,
+					})
+				else:
+					gors_killed = min(swords_count, src_state["remaining_gors"])
+					next_state = FrozenDict({
+						"remaining_moves": src_state["remaining_moves"] - 1,
+						"remaining_dice": src_state["remaining_dice"] - gors_killed,
+						"remaining_gors": src_state["remaining_gors"] - gors_killed,
+					})
+				next_states[next_state] += probability
+
+				if next_state not in self._explored_states:
+					self._unexplored_states.add(next_state)
+
+		self._transitions[src_state] = next_states
+		self._explored_states.add(src_state)
+
+	def dump_graphviz(self, initial_state: FrozenDict, filename: str):
+		def state2nodename(state: FrozenDict):
+			return f"N_{state['remaining_moves']}_{state['remaining_dice']}_{state['remaining_gors']}"
+#		print(self._transitions)
+		with open(filename, "w") as f:
+			print("digraph G {", file = f)
+			for explored_state in self._explored_states:
+				if explored_state["remaining_gors"] == 0:
+					color = "green"
+				elif explored_state["remaining_moves"] == 0:
+					color = "red"
+				else:
+					color = "black"
+				print(f"	{state2nodename(explored_state)} [ label = \"{explored_state['remaining_moves']} Z, {explored_state['remaining_dice']} W, {explored_state['remaining_gors']} G\"; color = \"{color}\"; ];", file = f)
+			for (src, dests) in self._transitions.items():
+				for (dest, probability) in dests.items():
+					if probability == 0:
+						continue
+					print(f"	{state2nodename(src)} -> {state2nodename(dest)} [ label = \"{probability * 100:.0f}%\"; ];", file = f)
+	#				print(src, dest, probability)
+
+			print("}", file = f)
+
+	def compute_matrix(self, initial_state: FrozenDict):
+		self._unexplored_states.add(initial_state)
+		while len(self._unexplored_states) > 0:
+			unexplored_state = self._unexplored_states.pop()
+			self._consider_transitions(unexplored_state)
+
+		ordered_states = list(self._explored_states)
+		state_index = { state: index for (index, state) in enumerate(ordered_states) }
+		matrix_data = [ ]
+		for state in ordered_states:
+			col = [ 0 ] * len(ordered_states)
+			for (next_state, probability) in self._transitions[state].items():
+				next_state_idx = state_index[next_state]
+				col[next_state_idx] = probability
+			matrix_data.append(col)
+			assert(sum(col) == 1)
+		matrix = Matrix(matrix_data).transpose()
+
+		return MarkovMatrix(ordered_states = ordered_states, matrix = matrix)
+
+heroes = [
+	{
+		"name": "Zwerg*in",
+		"name_short": "dwarf",
+		"moves": 6,
+		"dice_count": 3,
+		"dice": Dice({
+			"torch": 2,
+			"sword": 2,
+			"empty": 2,
+		}),
+	},
+	{
+		"name": "Magier*in",
+		"name_short": "mage",
+		"moves": 6,
+		"dice_count": 1,
+		"dice": Dice({
+			"torch": 1,
+			"lightning": 3,
+			"empty": 2,
+		}),
+	},
+	{
+		"name": "Bogenschütz*in",
+		"name_short": "rogue",
+		"moves": 9,
+		"dice_count": 3,
+		"dice": Dice({
+			"torch": 1,
+			"sword": 2,
+			"empty": 3,
+		}),
+	},
+	{
+		"name": "Krieger*in",
+		"name_short": "paladin",
+		"moves": 6,
+		"dice_count": 4,
+		"dice": Dice({
+			"torch": 1,
+			"sword": 3,
+			"empty": 2,
+		}),
+	},
+]
+
+for hero in heroes:
+	hero["result"] = {
+		"fight-2gor": { },
+		"fight-3gor": { },
+		"torch": { },
+	}
+
+	md = MultiDice(dice = hero["dice"])
+	for gor in [ 3, 2 ]:
+		initial_state = FrozenDict({
+			"remaining_moves": hero["moves"] + 1,
+			"remaining_dice": hero["dice_count"],
+			"remaining_gors": gor,
+		})
+		mmb = MarkovMatrixBuilder(multi_dice = md)
+		mmatrix = mmb.compute_matrix(initial_state = initial_state)
+		mmb.dump_graphviz(initial_state = initial_state, filename = f"hero_{hero['name_short']}_{gor}gor.dot")
+
+		for move_count in range(1, hero["moves"] + 2):
+			win_probability = 0
+			for (outcome, probability) in mmatrix.steps(initial_state, move_count):
+				if outcome["remaining_gors"] == 0:
+					win_probability += probability
+			hero["result"][f"fight-{gor}gor"][move_count] = win_probability
+
+	torch_probability = 0
+	for (outcome, probability) in md.outcomes(dice_count = hero["dice_count"]).items():
+		if outcome.get("torch", 0) > 0:
+			torch_probability += probability
+
+	for move_count in range(1, hero["moves"] + 2):
+		p = 1 - ((1 - torch_probability) ** move_count)
+		hero["result"]["torch"][move_count] = p
+
+
+for hero in heroes:
+	print(f"Held: {hero['name']}")
+	print("Züge         2-Gor        3-Gor        Fackel")
+	for move_count in range(1, hero["moves"] + 2):
+		line = [ str(move_count) ]
+		line += [ f"{hero['result']['fight-2gor'][move_count] * 100:.0f}%" ]
+		line += [ f"{hero['result']['fight-3gor'][move_count] * 100:.0f}%" ]
+		line += [ f"{hero['result']['torch'][move_count] * 100:.0f}%" ]
+		print("   ".join(f"{cell:<10s}" for cell in line))
+	print()

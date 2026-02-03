@@ -1,19 +1,22 @@
 # andor_junior
 Andor Junior is a simplified game of [Legends of
-Andor](https://legenden-von-andor.de/), targeted towards kids. In the base game
+Andor](https://legenden-von-andor.de/), geared towards kids. In the base game
 there are four differented characters (Dwarf, Mage, Rogue, Paladin) which have
 different strengths and weaknesses reflected by their character attributes.
 They each have individual dice, different counts of dice and different amounts
-of maximum moves they can perform. Hence, some classes are better at fighting while
-others excel at searching tasks.
+of maximum moves they can perform. Hence, some classes are better at fighting
+while others excel at searching tasks.
 
 Like any reasonable computer scientist, the question that pops up immediately
 is: Can we quantify this?
 
 Of course we can. This is an excellent example of using [Markov
-Matrices](https://en.wikipedia.org/wiki/Stochastic_matrix) from the probability
-graph. The reason for this is that fights can last multiple rounds and some
-dice get "used up" (when you succeed partially battling a Gor). Hence we need to keep track of:
+Matrices](https://en.wikipedia.org/wiki/Stochastic_matrix) to compute the
+cumulative probability.  This stochastic matrix can be derived from the
+directed graph by multiplication of an initial state vector with the transition
+matrix repeatedly.  The reason we need a state machine/state graph is that
+fights can last multiple rounds and some dice get "used up" (when you succeed
+partially battling a Gor). Hence we need to keep track of:
 
   - The remaining number of moves (dictated by the character attribute of solar
     discs plus one because they may carry a special item that increases their
